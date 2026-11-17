@@ -38,8 +38,10 @@ The bundle declares its own patch (`cordis.patch.yml`), so that is the only inst
 | Default changed | warning | Valid, but behaviour may differ |
 | Constraint changed (`pattern`, bounds, `format`) | warning | Valid values may now be rejected |
 | Composed schema (`anyOf` / `oneOf` / `$ref` …) changed | warning | Compared as one opaque signature |
+| Plain `type` replaced by `anyOf` (or the reverse) | warning | The direction cannot be proven, so it never claims "breaking" |
+| Change below the depth / size comparison limit | warning | A digest says "it moved", not which way |
 
-Nested object and array parameters are walked to depth 4 (64 properties per level), so `parameters.options.limit` is reported by its full path, not as "the schema changed somewhere".
+Nested object and array parameters are walked to depth 4 (64 properties per level), so `parameters.options.limit` is reported by its full path, not as "the schema changed somewhere". A change below that budget is reported as a truncated warning rather than ignored.
 
 ## What a user sees
 
@@ -102,7 +104,8 @@ Read this before installing:
 - **Server removal is not alarmed.** A server that disappears from the registry while others remain only shows as "cached, server not connected". Profiles, config edits and reconnects can all cause that transiently, and paging on it would be noise. Tool removal inside a connected server is still breaking.
 - **Raw tool names are unrecoverable.** `mcp-client` may append `_<12hex>` after lossy normalization or truncation. Reports use the public name callers actually invoke, and never guess the original.
 - **Grouping assumes the documented server-name pattern.** `mcp__` is split at the first `__`. A server name containing `__` would group wrongly; the documented config pattern is `[A-Za-z0-9_-]{1,32}`, which cannot.
-- **Depth and size bounds are deliberate.** Parameters nested deeper than four levels, or beyond 64 properties per level, are compared at the level where the bound stops, not ignored silently.
+- **Depth and size bounds are deliberate, and visible.** Parameters nested deeper than four levels, or lists beyond 64 properties / enum values / required names, are compared by a digest. If something changes past the bound you get a `truncated` warning, never a silent pass and never a guessed direction.
+- **`const` and `enum` are one value set.** `const: "a"` → `enum: ["a","b"]` is a widening, `enum: ["a"]` → `const: "a"` is no change, and a server changing spelling cannot fake a break.
 - **A read-only home costs persistence, not detection.** The last three generations then live in memory for the rest of the session.
 
 ## Robustness
@@ -133,7 +136,7 @@ DeepSeek Harness `0.1.0-rc.7` (`@deepseek-ai/cordis` 4.x event bus). Node `^22.1
 npm test
 ```
 
-Eleven tests run against a real cordis runtime: first-connection silence, five breaking shapes in one upgrade, re-sync churn with empty and partial generations, three-version trimming, teardown silence, malformed/circular/hostile schemas, missing commands and tools services, a duplicate command name, a read-only cache with in-memory fallback, reset plus re-baseline, and `mcp__` name parsing. Point `CORDIS_PATH` at a cordis `lib/index.js` if your checkout is not at the test's default vendored path.
+Seventeen tests run against a real cordis runtime: first-connection silence, five breaking shapes in one upgrade, re-sync churn with empty and partial generations, three-version trimming, teardown silence, malformed/circular/hostile schemas, missing commands and tools services, a duplicate command name, a read-only cache with in-memory fallback, reset plus re-baseline, `mcp__` name parsing, union schemas that must not be called breaking, `integer` → `number` widening, `const`/`enum` equivalence, boolean schemas and tuple items, a sub-depth change becoming a warning, a 70-value enum reorder staying silent, a second narrowing still raising its own notice, and a manual `/mcp-diff` not swallowing the pending notice. cordis is loaded from `CORDIS_PATH` when set, otherwise from the `@deepseek-ai/cordis` dev dependency, so `npm install` makes a clean clone testable.
 
 ## License
 

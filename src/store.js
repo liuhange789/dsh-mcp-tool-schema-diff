@@ -11,7 +11,7 @@
  * read-only home costs persistence, never the session.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -77,7 +77,7 @@ export function loadVersions(root, server) {
     const file = fileOf(root, server)
     if (!existsSync(file)) return []
     const text = readFileSync(file, 'utf8')
-    if (typeof text !== 'string' || text.length > MAX_FILE_BYTES * 2) return []
+    if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > MAX_FILE_BYTES * 2) return []
     const data = JSON.parse(text)
     if (!isRecord(data)) return []
     return normalizeVersions(data.versions)
@@ -103,7 +103,8 @@ export function appendVersion(root, server, tools, options = {}) {
     : new Date().toISOString()
   const versions = loadVersions(root, server).concat([{ takenAt, tools }]).slice(-KEEP)
   const text = JSON.stringify({ version: FILE_VERSION, server: safeServerName(server), versions })
-  if (text.length > MAX_FILE_BYTES) return false
+  // The cap is a real byte limit; UTF-8 text can be ~3x its character count.
+  if (Buffer.byteLength(text, 'utf8') > MAX_FILE_BYTES) return false
 
   const file = fileOf(root, server)
   const tmp = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
@@ -119,7 +120,13 @@ export function appendVersion(root, server, tools, options = {}) {
       } catch {
         // The target may not exist yet.
       }
-      renameSync(tmp, file)
+      try {
+        renameSync(tmp, file)
+      } catch {
+        // Last resort: leave a complete file instead of none.
+        copyFileSync(tmp, file)
+        unlinkSync(tmp)
+      }
     }
     return true
   } catch {

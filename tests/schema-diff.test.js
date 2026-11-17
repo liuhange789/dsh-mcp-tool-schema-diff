@@ -8,9 +8,23 @@ import test from 'node:test'
 import { apply, DEBOUNCE_MS, name, serverOf } from '../src/index.js'
 import { diffSnapshots, toolContract } from '../src/contract.js'
 
-// The real cordis runtime shipped with DeepSeek Harness 0.1.0-rc.7.
-const CORDIS = process.env.CORDIS_PATH ?? 'D:/新建文件夹/DeepSeek-Harness/vendor/cordis/lib/index.js'
-const { Context } = await import(pathToFileURL(CORDIS).href)
+// The real cordis runtime shipped with DeepSeek Harness 0.1.0-rc.7. A clean
+// clone has no vendored copy, so the published package is tried first.
+async function loadCordis() {
+  if (process.env.CORDIS_PATH) return import(pathToFileURL(process.env.CORDIS_PATH).href)
+  try {
+    return await import('@deepseek-ai/cordis')
+  } catch {
+    // Fall through to the vendored path below.
+  }
+  try {
+    return await import(pathToFileURL('D:/新建文件夹/DeepSeek-Harness/vendor/cordis/lib/index.js').href)
+  } catch {
+    throw new Error('cordis is not installed: run `npm install` or set CORDIS_PATH to vendor/cordis/lib/index.js')
+  }
+}
+
+const { Context } = await loadCordis()
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 /** Fires after the plugin's quiet window, with headroom for CI scheduling. */
@@ -406,4 +420,132 @@ test('parses only the documented mcp__ naming and ignores other tools', () => {
   assert.equal(serverOf('mcp__'), '')
   assert.equal(serverOf('bash'), '')
   assert.equal(toolContract({ name: 'mcp__srv__x', parameters: {} }).n, 'mcp__srv__x')
+})
+
+function contractOf(parameters) {
+  return toolContract({ name: 'mcp__srv__t', parameters })
+}
+
+function diffOf(before, after) {
+  return diffSnapshots([contractOf(before)], [contractOf(after)])
+}
+
+test('does not call a union schema a lost type', () => {
+  const widened = diffOf(
+    { type: 'string' },
+    { anyOf: [{ type: 'string' }, { type: 'number' }] },
+  )
+  assert.equal(widened.breaking, 0, 'string -> string|number is a widening, never a break')
+  assert.ok(widened.warning > 0, 'an unprovable direction must at least warn')
+  assert.doesNotMatch(widened.issues.map(item => item.detail).join(' '), /no longer accepts/)
+
+  const narrowed = diffOf(
+    { anyOf: [{ type: 'string' }, { type: 'number' }] },
+    { type: 'string' },
+  )
+  assert.equal(narrowed.breaking, 0, 'a composed schema cannot prove a break, so it must not claim one')
+  assert.ok(narrowed.warning > 0)
+})
+
+test('treats integer -> number as a widening and enum/const as one value set', () => {
+  assert.equal(diffOf({ type: 'integer' }, { type: 'number' }).breaking, 0)
+  assert.match(
+    diffOf({ type: 'integer' }, { type: 'number' }).issues.map(item => item.detail).join(' '),
+    /also accepts number/,
+  )
+
+  const constToEnum = diffOf({ const: 'a' }, { enum: ['a', 'b'] })
+  assert.equal(constToEnum.breaking, 0)
+  assert.match(constToEnum.issues.map(item => item.detail).join(' '), /also accepts "b"/)
+
+  // Same accepted values, different spelling: silence, not a false break.
+  assert.equal(diffOf({ enum: ['a'] }, { const: 'a' }).total, 0)
+
+  const enumToConst = diffOf({ enum: ['a', 'b'] }, { const: 'a' })
+  assert.equal(enumToConst.breaking, 1)
+  assert.match(enumToConst.issues.map(item => item.detail).join(' '), /no longer accepts "b"/)
+})
+
+test('sees boolean schemas, tuple items and changes below the depth limit', () => {
+  const forbidden = diffOf(
+    { type: 'object', properties: { nested: { type: 'array', items: true } } },
+    { type: 'object', properties: { nested: { type: 'array', items: false } } },
+  )
+  assert.equal(forbidden.breaking, 1)
+  assert.match(forbidden.issues.map(item => item.detail).join(' '), /now accepts no value/)
+
+  const tuple = diffOf(
+    { type: 'object', properties: { pair: { type: 'array', items: [{ type: 'string' }, { type: 'number' }] } } },
+    { type: 'object', properties: { pair: { type: 'array', items: [{ type: 'string' }, { type: 'boolean' }] } } },
+  )
+  assert.equal(tuple.breaking, 0)
+  assert.ok(tuple.warning > 0)
+
+  const deepBefore = { type: 'object', properties: {} }
+  const deepAfter = { type: 'object', properties: {} }
+  let a = deepBefore
+  let b = deepAfter
+  for (let level = 0; level < 6; level += 1) {
+    a.properties.next = { type: 'object', properties: {} }
+    b.properties.next = { type: 'object', properties: {} }
+    a = a.properties.next
+    b = b.properties.next
+  }
+  a.properties.leaf = { type: 'string' }
+  b.properties.leaf = { type: 'number' }
+  const truncated = diffOf(deepBefore, deepAfter)
+  assert.equal(truncated.breaking, 0)
+  assert.ok(truncated.warning > 0, 'a change below the depth budget must not be silent')
+  assert.match(truncated.issues.map(item => item.detail).join(' '), /comparison limit/)
+})
+
+test('does not turn a large enum reorder into a break', () => {
+  const values = []
+  for (let index = 0; index < 70; index += 1) values.push(`v${index}`)
+  const reordered = [...values].reverse()
+  assert.equal(diffOf({ enum: values, type: 'string' }, { enum: reordered, type: 'string' }).breaking, 0)
+
+  const removed = diffOf({ enum: values, type: 'string' }, { enum: values.slice(0, 69), type: 'string' })
+  assert.ok(removed.breaking > 0 || removed.warning > 0, 'a removal beyond the cap must still be visible')
+})
+
+test('notifies again when the same parameter narrows a second time', async () => {
+  const home = tempHome()
+  try {
+    const booted = boot({
+      schemas: [tool('mcp__srv__t', { type: 'object', properties: { mode: { type: 'string', enum: ['a', 'b', 'c'] } } })],
+    })
+    await sleep(WAIT)
+
+    booted.setSchemas([tool('mcp__srv__t', { type: 'object', properties: { mode: { type: 'string', enum: ['a', 'b'] } } })])
+    await sleep(WAIT)
+    assert.equal(booted.notices.length, 1)
+
+    booted.setSchemas([tool('mcp__srv__t', { type: 'object', properties: { mode: { type: 'string', enum: ['a'] } } })])
+    await sleep(WAIT)
+    assert.equal(booted.notices.length, 2, 'the second narrowing needs its own notice')
+    assert.match(booted.notices[1].content[0].text, /no longer accepts "b"/)
+    stop(booted.ctx)
+  } finally {
+    cleanup(home)
+  }
+})
+
+test('a manual /mcp-diff does not swallow the pending notice', async () => {
+  const home = tempHome()
+  try {
+    const booted = boot({ schemas: [SEARCH_V1] })
+    await sleep(WAIT)
+
+    booted.setSchemas([SEARCH_V2])
+    const manual = command(booted, '')
+    assert.equal(manual.kind, 'success')
+
+    await sleep(WAIT)
+    assert.equal(booted.notices.length, 1, 'the debounce must still raise the notice')
+    assert.equal(readVersions(home, 'github').length, 2)
+    stop(booted.ctx)
+  } finally {
+    cleanup(home)
+  }
 })

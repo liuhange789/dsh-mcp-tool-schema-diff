@@ -19,7 +19,7 @@
  */
 
 import { diffSnapshots, toolContract } from './contract.js'
-import { appendVersion, cacheRoot, forgetAll, forgetServer, KEEP, listCachedServers, loadVersions } from './store.js'
+import { appendVersion, cacheRoot, forgetAll, forgetServer, KEEP, listCachedServers, loadVersions, safeServerName } from './store.js'
 import { renderNotice, renderReport } from './report.js'
 
 export const name = 'mcp-tool-schema-diff'
@@ -69,6 +69,18 @@ function optionalService(ctx, key) {
 
 function emptyDiff() {
   return { breaking: 0, warning: 0, info: 0, total: 0, issues: [], signature: '' }
+}
+
+/**
+ * Prefer whichever history is newer when the disk cannot be written: an
+ * in-memory generation must not be replaced by a stale file on every tick.
+ */
+function newerHistory(stored, memory) {
+  if (stored.length === 0) return memory
+  if (memory.length === 0) return stored
+  const diskAt = safeText(stored[stored.length - 1]?.takenAt)
+  const memoryAt = safeText(memory[memory.length - 1]?.takenAt)
+  return memoryAt > diskAt ? memory : stored
 }
 
 /**
@@ -195,7 +207,7 @@ export function apply(ctx) {
     const memory = state.memory.get(server) ?? []
     remember(server, memory.concat([entry]))
     const written = appendVersion(root, server, tools, { takenAt: entry.takenAt })
-    if (!written) state.persistFailed = true
+    state.persistFailed = !written
     return written
   }
 
@@ -228,13 +240,15 @@ export function apply(ctx) {
       for (const [server, tools] of live) {
         const stored = loadVersions(root, server)
         const memory = state.memory.get(server) ?? []
-        const history = stored.length > 0 ? stored : memory
-        if (stored.length > 0) remember(server, stored)
+        const history = newerHistory(stored, memory)
+        remember(server, history)
         const last = history[history.length - 1]
         let diff = emptyDiff()
         let baseline = false
 
         if (!last) {
+          // A baseline never alarms, so it is safe to store even on a manual
+          // check; that keeps the three version slots meaningful.
           baseline = true
           state.baselines.add(server)
           persist(server, tools, root)
@@ -242,8 +256,11 @@ export function apply(ctx) {
           diff = diffSnapshots(last.tools, tools)
           // An identical generation must not consume one of the three slots.
           if (diff.total > 0) {
-            persist(server, tools, root)
             state.lastDiffs.set(server, { diff, at: Date.now() })
+            // A manual `/mcp-diff` must not persist the changed generation,
+            // otherwise the debounce that follows sees "no change" and the
+            // notice the user still needs is never raised.
+            if (notify) persist(server, tools, root)
           }
         }
 
@@ -338,11 +355,13 @@ export function apply(ctx) {
         if (normalized === 'reset') {
           const root = cacheRoot()
           if (target !== '') {
+            // The file name is sanitised, so the in-memory keys must be too.
+            const key = safeServerName(target)
             forgetServer(root, target)
-            state.memory.delete(target)
-            state.entries.delete(target)
-            state.lastDiffs.delete(target)
-            state.baselines.delete(target)
+            state.memory.delete(key)
+            state.entries.delete(key)
+            state.lastDiffs.delete(key)
+            state.baselines.delete(key)
           } else {
             forgetAll(root)
             state.memory.clear()

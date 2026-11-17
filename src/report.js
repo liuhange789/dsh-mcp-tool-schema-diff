@@ -114,8 +114,13 @@ function regressionWord(breaking, warning) {
 export function renderNotice(server, diff) {
   const first = diff.issues.find(item => item.severity === 'breaking')
   const extra = diff.breaking - (first ? 1 : 0)
-  const tail = extra > 0 ? ` (+${extra} more breaking)` : ''
+  const tail = extra > 0 ? ` (+${extra} more breaking).` : '.'
   const warnings = diff.warning > 0 ? `, ${plural(diff.warning, 'warning')}` : ''
-  const text = `MCP tool schema changed for "${safeText(server)}": ${plural(diff.breaking, 'breaking change')}${warnings}. ${first ? first.detail : 'contract changed'}${tail}. Run /mcp-diff for the full diff.`
-  return clip(text, 480)
+  const head = `MCP tool schema changed for "${safeText(server)}": ${plural(diff.breaking, 'breaking change')}${warnings}. `
+  const detail = first ? first.detail : 'contract changed'
+  const cta = ' Run /mcp-diff for the full diff.'
+  // Clip the detail, never the call to action: a long enum list once pushed
+  // the command pointer off the end of the notice.
+  const room = Math.max(40, 480 - head.length - tail.length - cta.length)
+  return `${head}${clip(detail, room)}${tail}${cta}`
 }

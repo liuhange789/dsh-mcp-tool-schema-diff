@@ -114,7 +114,47 @@ function stableStringify(value, seen = new WeakSet()) {
 function encodeLiteral(value) {
   const text = stableStringify(value)
   if (text === 'undefined') return undefined
-  return text.length > 120 ? `${text.slice(0, 119)}…` : text
+  if (text.length <= 120) return text
+  // Keep the readable prefix, but the hash is what makes an edit past the
+  // cutoff visible instead of silently identical.
+  return `${text.slice(0, 100)}…#${hash(text)}`
+}
+
+/** Short deterministic digest of a long string, used where truncation must not hide changes. */
+function hash(text) {
+  try {
+    return createHash('sha256').update(String(text)).digest('hex').slice(0, 12)
+  } catch {
+    return ''
+  }
+}
+
+/** Types that a later type list still accepts; JSON Schema `number` accepts integers. */
+const WIDER_TYPES = new Map([['integer', 'number']])
+
+function acceptsType(afterTypes, beforeType) {
+  if (afterTypes.includes(beforeType)) return true
+  const wider = WIDER_TYPES.get(beforeType)
+  return wider !== undefined && afterTypes.includes(wider)
+}
+
+/** Detail text that names a bounded number of values, so the notice keeps its call to action. */
+function joinValues(values, limit = 5) {
+  if (!Array.isArray(values) || values.length === 0) return ''
+  const shown = values.slice(0, limit).join(', ')
+  return values.length > limit ? `${shown} … (+${values.length - limit} more)` : shown
+}
+
+/** The value set a parameter accepts: `const` is a one-value enum. */
+function allowedOf(node) {
+  if (!isRecord(node)) return undefined
+  if (node.c !== undefined) return [node.c]
+  if (Array.isArray(node.e)) return node.e
+  return undefined
+}
+
+function sameValues(a, b) {
+  return a.length === b.length && a.every(value => b.includes(value))
 }
 
 function typeList(node) {
@@ -144,12 +184,19 @@ function enumOf(node) {
   try {
     const values = node?.enum
     if (!Array.isArray(values)) return undefined
-    const out = []
-    for (const value of values.slice(0, MAX_ENUM)) {
-      const encoded = encodeLiteral(value)
-      if (encoded !== undefined) out.push(encoded)
+    const encoded = []
+    for (const value of values) {
+      const text = encodeLiteral(value)
+      if (text !== undefined) encoded.push(text)
     }
-    return out.length > 0 ? out : undefined
+    if (encoded.length === 0) return undefined
+    // Sort before the cap so a pure reorder can never look like a narrowed set.
+    const sorted = [...encoded].sort()
+    return {
+      values: sorted.slice(0, MAX_ENUM),
+      truncated: sorted.length > MAX_ENUM,
+      hash: hash(sorted.join('\u0000')),
+    }
   } catch {
     return undefined
   }
@@ -179,14 +226,19 @@ function constraintsOf(node) {
 function requiredOf(node) {
   try {
     const raw = node?.required
-    if (!Array.isArray(raw)) return []
+    if (!Array.isArray(raw)) return { names: [], truncated: false, hash: '' }
     const names = []
-    for (const name of raw.slice(0, MAX_REQUIRED)) {
+    for (const name of raw) {
       if (typeof name === 'string') names.push(name)
     }
-    return [...new Set(names)].sort()
+    const sorted = [...new Set(names)].sort()
+    return {
+      names: sorted.slice(0, MAX_REQUIRED),
+      truncated: sorted.length > MAX_REQUIRED,
+      hash: hash(sorted.join('\u0000')),
+    }
   } catch {
-    return []
+    return { names: [], truncated: false, hash: '' }
   }
 }
 
@@ -198,12 +250,17 @@ function opaqueOf(node) {
       const encoded = stableStringify(node[key])
       if (encoded !== 'undefined') parts.push(`${key}:${encoded}`)
     }
+    // Tuple items are a list, not a schema object; keep them comparable as a whole.
+    if (Array.isArray(node?.items)) {
+      const encoded = stableStringify(node.items)
+      if (encoded !== 'undefined') parts.push(`items:${encoded}`)
+    }
   } catch {
     return undefined
   }
   if (parts.length === 0) return undefined
   const text = parts.join('|')
-  return text.length > MAX_OPAQUE ? text.slice(0, MAX_OPAQUE) : text
+  return text.length > MAX_OPAQUE ? `${text.slice(0, MAX_OPAQUE - 13)}…#${hash(text)}` : text
 }
 
 /**
@@ -213,9 +270,15 @@ function opaqueOf(node) {
  * @param seen - cycle guard for hostile or accidental self-reference.
  */
 function normalize(node, depth, seen) {
+  // JSON Schema allows boolean schemas: `true` accepts anything, `false` nothing.
+  if (node === true) return { k: 'any' }
+  if (node === false) return { k: 'never' }
   if (!isRecord(node)) return { k: 'any' }
   if (seen.has(node)) return { k: 'cycle' }
-  if (depth > MAX_DEPTH) return { k: 'deep' }
+  if (depth > MAX_DEPTH) {
+    // Past the depth budget, compare a digest instead of silently ignoring it.
+    return { k: 'deep', h: hash(stableStringify(node)) }
+  }
   seen.add(node)
   try {
     const out = { k: kindOf(node) }
@@ -223,7 +286,11 @@ function normalize(node, depth, seen) {
     if (types.length > 0) out.ts = [...new Set(types)].sort()
 
     const values = enumOf(node)
-    if (values) out.e = values
+    if (values) {
+      out.e = values.values
+      if (values.truncated) out.et = true
+      out.eh = values.hash
+    }
     const constant = literalOf(node, 'const')
     if (constant !== undefined) out.c = constant
     const fallback = literalOf(node, 'default')
@@ -231,13 +298,16 @@ function normalize(node, depth, seen) {
     const constraints = constraintsOf(node)
     if (constraints) out.f = constraints
     const required = requiredOf(node)
-    if (required.length > 0) out.r = required
+    if (required.names.length > 0) out.r = required.names
+    if (required.truncated) out.rt = true
+    out.rh = required.hash
 
     if (isRecord(node.properties)) {
+      const keys = Object.keys(node.properties).sort()
       const properties = {}
       let kept = 0
       let truncated = false
-      for (const key of Object.keys(node.properties).sort()) {
+      for (const key of keys) {
         if (kept >= MAX_PROPS) {
           truncated = true
           break
@@ -246,9 +316,17 @@ function normalize(node, depth, seen) {
         kept += 1
       }
       out.p = properties
+      out.ph = hash(keys.join('\u0000'))
       if (truncated) out.pt = true
     }
-    if (isRecord(node.items)) out.i = normalize(node.items, depth + 1, seen)
+    if (Array.isArray(node.items)) {
+      // Tuple validation; the opaque signature above carries the member schemas.
+      out.i = { k: 'tuple' }
+    } else if (node.items === true || node.items === false) {
+      out.i = { k: node.items ? 'any' : 'never' }
+    } else if (isRecord(node.items)) {
+      out.i = normalize(node.items, depth + 1, seen)
+    }
 
     const opaque = opaqueOf(node)
     if (opaque) out.o = opaque
@@ -297,8 +375,7 @@ function issue(severity, kind, tool, path, detail) {
 }
 
 function describeTypes(types) {
-  if (!Array.isArray(types) || types.length === 0) return 'any'
-  return types.join('|')
+  return joinValues(types) || 'any'
 }
 
 function showEncoded(value) {
@@ -312,59 +389,92 @@ function joinPath(prefix, key) {
 function compareNode(before, after, tool, path, issues) {
   if (!isRecord(before) || !isRecord(after)) return
 
-  const beforeTypes = before.ts ?? []
-  const afterTypes = after.ts ?? []
-  const lostTypes = beforeTypes.filter(type => !afterTypes.includes(type))
-  const gainedTypes = afterTypes.filter(type => !beforeTypes.includes(type))
-  if (lostTypes.length > 0) {
-    // Deeper shape is meaningless once an accepted type is gone.
-    issues.push(issue(
-      'breaking',
-      'param.type.changed',
-      tool,
-      path,
-      `${path} no longer accepts ${describeTypes(lostTypes)} (now ${describeTypes(afterTypes)})`,
-    ))
+  // Below the depth budget only a digest exists, so the honest report is
+  // "something changed", never a guessed direction.
+  if (before.k === 'deep' || after.k === 'deep') {
+    if (before.h !== after.h) {
+      issues.push(issue(
+        'warning',
+        'param.truncated',
+        tool,
+        path,
+        `${path} changed below the ${MAX_DEPTH}-level comparison limit; inspect this tool by hand`,
+      ))
+    }
     return
   }
-  if (gainedTypes.length > 0) {
+  if (before.k === 'cycle' || after.k === 'cycle') return
+
+  if (after.k === 'never' && before.k !== 'never') {
+    issues.push(issue('breaking', 'param.never', tool, path, `${path} now accepts no value`))
+    return
+  }
+  if (before.k === 'never' && after.k !== 'never') {
+    issues.push(issue('info', 'param.type.widened', tool, path, `${path} accepts values again`))
+  }
+
+  const beforeTypes = Array.isArray(before.ts) ? before.ts : undefined
+  const afterTypes = Array.isArray(after.ts) ? after.ts : undefined
+  if (beforeTypes && afterTypes) {
+    const lostTypes = beforeTypes.filter(type => !acceptsType(afterTypes, type))
+    const gainedTypes = afterTypes.filter(type => !beforeTypes.includes(type))
+    if (lostTypes.length > 0) {
+      // Deeper shape is meaningless once an accepted type is gone.
+      issues.push(issue(
+        'breaking',
+        'param.type.changed',
+        tool,
+        path,
+        `${path} no longer accepts ${describeTypes(lostTypes)} (now ${describeTypes(afterTypes)})`,
+      ))
+      return
+    }
+    if (gainedTypes.length > 0) {
+      issues.push(issue(
+        'info',
+        'param.type.widened',
+        tool,
+        path,
+        `${path} now also accepts ${describeTypes(gainedTypes)}`,
+      ))
+    }
+  } else if (beforeTypes || afterTypes) {
+    // The other side is composed (`anyOf`, `$ref`, ...) or untyped. Claiming a
+    // lost type here would turn every union/nullable schema into a false break.
     issues.push(issue(
-      'info',
-      'param.type.widened',
+      'warning',
+      'param.type.undeclared',
       tool,
       path,
-      `${path} now also accepts ${describeTypes(gainedTypes)}`,
+      `${path} ${beforeTypes ? 'no longer declares' : 'now declares'} a plain type; check the schema source`,
     ))
   }
 
-  // const is a one-value enum.
-  if (before.c !== after.c) {
-    if (after.c === undefined) {
-      issues.push(issue('info', 'param.const.removed', tool, path, `${path} is no longer fixed to one value`))
-    } else if (before.c === undefined) {
-      issues.push(issue('breaking', 'param.const.added', tool, path, `${path} is now fixed to ${after.c}`))
+  // `const` is a one-value enum: compare accepted value sets, never the syntax
+  // a server chose, so `const: "a"` -> `enum: ["a","b"]` is a widening.
+  const beforeAllowed = allowedOf(before)
+  const afterAllowed = allowedOf(after)
+  if (beforeAllowed && afterAllowed) {
+    if (before.et || after.et) {
+      if (before.eh !== after.eh) {
+        issues.push(issue(
+          'warning',
+          'param.values.truncated',
+          tool,
+          path,
+          `${path} allowed values changed beyond the ${MAX_ENUM}-value comparison limit`,
+        ))
+      }
     } else {
-      issues.push(issue('breaking', 'param.const.changed', tool, path, `${path} changed from ${before.c} to ${after.c}`))
-    }
-  }
-
-  const beforeEnum = before.e
-  const afterEnum = after.e
-  if (beforeEnum || afterEnum) {
-    if (!beforeEnum && afterEnum) {
-      issues.push(issue('breaking', 'param.enum.added', tool, path, `${path} now accepts only ${afterEnum.join(', ')}`))
-    } else if (beforeEnum && !afterEnum) {
-      issues.push(issue('info', 'param.enum.removed', tool, path, `${path} no longer restricts its values`))
-    } else {
-      const lostValues = beforeEnum.filter(value => !afterEnum.includes(value))
-      const gainedValues = afterEnum.filter(value => !beforeEnum.includes(value))
+      const lostValues = beforeAllowed.filter(value => !afterAllowed.includes(value))
+      const gainedValues = afterAllowed.filter(value => !beforeAllowed.includes(value))
       if (lostValues.length > 0) {
         issues.push(issue(
           'breaking',
           'param.enum.narrowed',
           tool,
           path,
-          `${path} no longer accepts ${lostValues.join(', ')}`,
+          `${path} no longer accepts ${joinValues(lostValues)}`,
         ))
       }
       if (gainedValues.length > 0) {
@@ -373,10 +483,14 @@ function compareNode(before, after, tool, path, issues) {
           'param.enum.widened',
           tool,
           path,
-          `${path} now also accepts ${gainedValues.join(', ')}`,
+          `${path} now also accepts ${joinValues(gainedValues)}`,
         ))
       }
     }
+  } else if (!beforeAllowed && afterAllowed) {
+    issues.push(issue('breaking', 'param.enum.added', tool, path, `${path} now accepts only ${joinValues(afterAllowed)}`))
+  } else if (beforeAllowed && !afterAllowed) {
+    issues.push(issue('info', 'param.enum.removed', tool, path, `${path} no longer restricts its values`))
   }
 
   if (before.d !== after.d) {
@@ -399,7 +513,7 @@ function compareNode(before, after, tool, path, issues) {
       'param.constraints.changed',
       tool,
       path,
-      `${path} constraint${changedConstraints.length === 1 ? '' : 's'} changed: ${changedConstraints.join(', ')}`,
+      `${path} constraint${changedConstraints.length === 1 ? '' : 's'} changed: ${joinValues(changedConstraints)}`,
     ))
   }
 
@@ -409,33 +523,44 @@ function compareNode(before, after, tool, path, issues) {
 
   const beforeRequired = before.r ?? []
   const afterRequired = after.r ?? []
-  for (const name of afterRequired) {
-    if (!beforeRequired.includes(name)) {
-      issues.push(issue(
-        'breaking',
-        'param.required.added',
-        tool,
-        joinPath(path, name),
-        `${joinPath(path, name)} is now required`,
-      ))
-    }
+  const addedRequired = afterRequired.filter(name => !beforeRequired.includes(name))
+  const droppedRequired = beforeRequired.filter(name => !afterRequired.includes(name))
+  for (const name of addedRequired) {
+    issues.push(issue(
+      'breaking',
+      'param.required.added',
+      tool,
+      joinPath(path, name),
+      `${joinPath(path, name)} is now required`,
+    ))
   }
-  for (const name of beforeRequired) {
-    if (!afterRequired.includes(name)) {
-      issues.push(issue(
-        'info',
-        'param.required.removed',
-        tool,
-        joinPath(path, name),
-        `${joinPath(path, name)} is no longer required`,
-      ))
-    }
+  for (const name of droppedRequired) {
+    issues.push(issue(
+      'info',
+      'param.required.removed',
+      tool,
+      joinPath(path, name),
+      `${joinPath(path, name)} is no longer required`,
+    ))
+  }
+  if (addedRequired.length === 0 && droppedRequired.length === 0
+    && (before.rt || after.rt) && before.rh !== after.rh) {
+    issues.push(issue(
+      'warning',
+      'param.required.truncated',
+      tool,
+      path,
+      `${path} required list changed beyond the ${MAX_REQUIRED}-name comparison limit`,
+    ))
   }
 
   const beforeProps = before.p ?? {}
   const afterProps = after.p ?? {}
+  let removedProps = 0
+  let addedProps = 0
   for (const name of Object.keys(beforeProps)) {
     if (Object.hasOwn(afterProps, name)) continue
+    removedProps += 1
     issues.push(issue(
       'breaking',
       'param.removed',
@@ -448,12 +573,23 @@ function compareNode(before, after, tool, path, issues) {
     if (Object.hasOwn(beforeProps, name)) continue
     // A new required property was already reported as required.added.
     if (afterRequired.includes(name)) continue
+    addedProps += 1
     issues.push(issue(
       'info',
       'param.added',
       tool,
       joinPath(path, name),
       `${joinPath(path, name)} is new and optional`,
+    ))
+  }
+  if (removedProps === 0 && addedProps === 0
+    && (before.pt || after.pt) && before.ph !== after.ph) {
+    issues.push(issue(
+      'warning',
+      'param.properties.truncated',
+      tool,
+      path,
+      `${path} property list changed beyond the ${MAX_PROPS}-property comparison limit`,
     ))
   }
   for (const name of Object.keys(beforeProps)) {
@@ -533,7 +669,9 @@ export function diffSnapshots(before, after) {
   const warning = issues.filter(item => item.severity === 'warning')
   const info = issues.filter(item => item.severity === 'info')
   const signature = issues
-    .map(item => `${item.kind}:${item.tool}:${item.path}`)
+    // The detail carries the actual values: the same path narrowing twice
+    // (`enum [a,b,c] -> [a,b]` then `-> [a]`) is two different alarms.
+    .map(item => `${item.kind}:${item.tool}:${item.path}:${item.detail}`)
     .join('|')
     .slice(0, 400)
 
