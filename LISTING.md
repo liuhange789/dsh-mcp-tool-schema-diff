@@ -54,8 +54,8 @@ MCP tool schema diff · 1 server connected · 6 breaking changes · no warnings
 
 ## Submission checklist
 
-- [x] `npm test` — 11/11 against rc.7 (real vendored cordis runtime, hostile-input cases included)
+- [x] `npm test` — 17/17 against rc.7 (real cordis runtime, hostile-input and false-positive cases included)
 - [x] GitHub repo — <https://github.com/liuhange789/dsh-mcp-tool-schema-diff>, public, topics `dsh-plugin, dsh, deepseek-harness, mcp, schema, breaking-change`, `dsh.bundle` declared, `cordis.patch.yml` shipped
-- [x] `npm publish` — `dsh-mcp-tool-schema-diff@0.1.0` public; registry readback: `https://registry.npmjs.org/dsh-mcp-tool-schema-diff/-/dsh-mcp-tool-schema-diff-0.1.0.tgz`
+- [x] `npm publish` — `dsh-mcp-tool-schema-diff@0.1.1` public; registry readback: `https://registry.npmjs.org/dsh-mcp-tool-schema-diff/-/dsh-mcp-tool-schema-diff-0.1.1.tgz`
 - [x] plugin-center PR — <https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/16237>, one file `data/plugins/liuhange789__dsh-mcp-tool-schema-diff.yml`
 - [ ] Submission gate — local `check-submission` passes everything except repository age: 0.0 days old (needs 1). Expected for a same-day repo; CI re-runs by itself, so there is nothing to resubmit
