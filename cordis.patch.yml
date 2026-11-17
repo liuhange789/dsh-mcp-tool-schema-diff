@@ -1,0 +1,3 @@
+- insert:
+    - id: mcp-tool-schema-diff
+      name: dsh-mcp-tool-schema-diff

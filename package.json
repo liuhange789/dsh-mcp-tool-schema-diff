@@ -1,0 +1,47 @@
+{
+  "name": "dsh-mcp-tool-schema-diff",
+  "version": "0.1.0",
+  "description": "Breaking-change detector for MCP tool schemas in DSH: remembers each server's tool contract and reports removed tools, dropped parameters, type and required-field changes after an upgrade",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "mcp",
+    "schema",
+    "breaking-change",
+    "diff",
+    "tools",
+    "maintenance"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/schema-diff.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liuhange789/dsh-mcp-tool-schema-diff.git"
+  },
+  "homepage": "https://github.com/liuhange789/dsh-mcp-tool-schema-diff#readme",
+  "bugs": {
+    "url": "https://github.com/liuhange789/dsh-mcp-tool-schema-diff/issues"
+  },
+  "author": "liuhange789",
+  "license": "MIT"
+}
