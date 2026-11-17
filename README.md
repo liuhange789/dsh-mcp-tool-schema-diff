@@ -133,7 +133,7 @@ DeepSeek Harness `0.1.0-rc.7` (`@deepseek-ai/cordis` 4.x event bus). Node `^22.1
 npm test
 ```
 
-Eleven tests run against the real vendored cordis runtime: first-connection silence, five breaking shapes in one upgrade, re-sync churn with empty and partial generations, three-version trimming, teardown silence, malformed/circular/hostile schemas, missing commands and tools services, a duplicate command name, a read-only cache with in-memory fallback, reset plus re-baseline, and `mcp__` name parsing.
+Eleven tests run against a real cordis runtime: first-connection silence, five breaking shapes in one upgrade, re-sync churn with empty and partial generations, three-version trimming, teardown silence, malformed/circular/hostile schemas, missing commands and tools services, a duplicate command name, a read-only cache with in-memory fallback, reset plus re-baseline, and `mcp__` name parsing. Point `CORDIS_PATH` at a cordis `lib/index.js` if your checkout is not at the test's default vendored path.
 
 ## License
 

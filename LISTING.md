@@ -4,7 +4,7 @@
 
 ```yaml
 url: https://github.com/liuhange789/dsh-mcp-tool-schema-diff
-name: DSH MCP Tool Schema Diff (/mcp-diff)
+name: DSH MCP Tool Schema Diff
 category: tools
 description:
   en: "Breaking-change watchdog for MCP tool contracts. Remembers the last three tool generations per MCP server from the live tools/change registry and diffs them: removed tools, dropped parameters, accepted-type changes, new required fields and narrowed enums are graded breaking; default and constraint changes are warnings; additions are info. A quiet-window debounce absorbs mcp-client re-sync churn, so first connections and reconnects never false-alarm. Reports through a transcript notice plus `/mcp-diff`, caches snapshots under `$DSH_HOME/mcp-schema-cache` (last 3 versions), reads the registry only and writes no other state."
@@ -55,7 +55,7 @@ MCP tool schema diff · 1 server connected · 6 breaking changes · no warnings
 ## Submission checklist
 
 - [x] `npm test` — 11/11 against rc.7 (real vendored cordis runtime, hostile-input cases included)
-- [ ] GitHub repo `liuhange789/dsh-mcp-tool-schema-diff` — public, topics `dsh-plugin, dsh, deepseek-harness, mcp, schema, breaking-change`, `dsh.bundle` declared, `cordis.patch.yml` shipped
-- [ ] `npm publish` — `dsh-mcp-tool-schema-diff@0.1.0`, public, latest tag
-- [ ] plugin-center PR — one `data/plugins/liuhange789__dsh-mcp-tool-schema-diff.yml`
-- [ ] Submission gate — repository age (a repo created today is expected to fail the 1-day age gate; it re-runs by itself)
+- [x] GitHub repo — <https://github.com/liuhange789/dsh-mcp-tool-schema-diff>, public, topics `dsh-plugin, dsh, deepseek-harness, mcp, schema, breaking-change`, `dsh.bundle` declared, `cordis.patch.yml` shipped
+- [x] `npm publish` — `dsh-mcp-tool-schema-diff@0.1.0` public; registry readback: `https://registry.npmjs.org/dsh-mcp-tool-schema-diff/-/dsh-mcp-tool-schema-diff-0.1.0.tgz`
+- [x] plugin-center PR — <https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/16237>, one file `data/plugins/liuhange789__dsh-mcp-tool-schema-diff.yml`
+- [ ] Submission gate — local `check-submission` passes everything except repository age: 0.0 days old (needs 1). Expected for a same-day repo; CI re-runs by itself, so there is nothing to resubmit
